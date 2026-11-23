@@ -1,0 +1,152 @@
+<?php
+
+namespace App\Services;
+
+use App\Models\Deadline;
+use Carbon\Carbon;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Str;
+use Sabre\VObject\Reader;
+
+/**
+ * Parser file .ics (iCal) dari Moodle — FR-02/FR-03.
+ *
+ * Parser dibuat defensif (risiko no. 1 pada LKM 9):
+ *  - event tanpa DTSTART dilewati, bukan membuat seluruh sinkron gagal;
+ *  - UID kosong diganti hash dari isi event;
+ *  - mata kuliah diambil dari CATEGORIES, lalu dari DESCRIPTION
+ *    ("Course: …" / "Mata Kuliah: …"), lalu diisi placeholder;
+ *  - tipe event (tugas/kuis/lainnya) ditebak dari kata kunci judul.
+ */
+class IcalParserService
+{
+    public const FALLBACK_COURSE = '(Tanpa mata kuliah)';
+
+    /**
+     * Ambil file iCal dari URL Moodle dan kembalikan daftar event ternormalisasi.
+     *
+     * @return array<int, array{uid:string, summary:string, starts_at:Carbon, course:string, type:string, url:?string, description:?string}>
+     *
+     * @throws \RuntimeException ketika unduhan/parsing gagal
+     */
+    public function fetchAndParse(string $url): array
+    {
+        $response = Http::timeout(30)
+            ->withHeaders(['Accept' => 'text/calendar, text/plain;q=0.8, */*;q=0.5'])
+            ->retry(2, 500)
+            ->get($url);
+
+        if ($response->failed()) {
+            throw new \RuntimeException('Gagal mengunduh kalender (HTTP '.$response->status().'). Periksa kembali URL ekspor kalender Moodle.');
+        }
+
+        $body = $response->body();
+
+        if (! str_contains($body, 'BEGIN:VCALENDAR')) {
+            throw new \RuntimeException('URL tidak menghasilkan file kalender iCal (.ics) yang valid.');
+        }
+
+        return $this->parseIcs($body);
+    }
+
+    /**
+     * Parse isi file .ics menjadi array event.
+     *
+     * @return array<int, array{uid:string, summary:string, starts_at:Carbon, course:string, type:string, url:?string, description:?string}>
+     */
+    public function parseIcs(string $ics): array
+    {
+        try {
+            $calendar = Reader::read($ics, Reader::OPTION_FORGIVING);
+        } catch (\Throwable $e) {
+            throw new \RuntimeException('File iCal tidak dapat dibaca (format rusak atau bukan file .ics).', 0, $e);
+        }
+
+        $events = [];
+
+        foreach ($calendar->VEVENT as $event) {
+            $summary = trim((string) $event->SUMMARY);
+            $description = trim((string) $event->DESCRIPTION);
+            $dt = $event->DTSTART?->getDateTime();
+
+            // Event tanpa waktu mulai tidak bisa dijadwalkan — lewati.
+            if ($dt === null) {
+                continue;
+            }
+
+            $startsAt = Carbon::instance($dt)->setTimezone(config('app.timezone', 'UTC'));
+
+            $events[] = [
+                'uid' => $this->resolveUid($event, $summary, $startsAt),
+                'summary' => $summary !== '' ? $summary : '(Tanpa judul)',
+                'starts_at' => $startsAt,
+                'course' => $this->resolveCourse($event, $description),
+                'type' => $this->resolveType($summary),
+                'url' => $this->resolveUrl($event),
+                'description' => $description !== '' ? $description : null,
+            ];
+        }
+
+        return $events;
+    }
+
+    /**
+     * Validasi cepat URL iCal (dipakai saat mahasiswa menyimpan tautan — US-2).
+     *
+     * @return array{ok: bool, count: int, error: ?string}
+     */
+    public function validateUrl(string $url): array
+    {
+        try {
+            $events = $this->fetchAndParse($url);
+        } catch (\Throwable $e) {
+            return ['ok' => false, 'count' => 0, 'error' => $e->getMessage()];
+        }
+
+        return ['ok' => true, 'count' => count($events), 'error' => null];
+    }
+
+    private function resolveUid($event, string $summary, Carbon $startsAt): string
+    {
+        $uid = trim((string) $event->UID);
+
+        return $uid !== '' ? Str::limit($uid, 250) : 'mdc-'.sha1($summary.'|'.$startsAt->toIso8601String());
+    }
+
+    private function resolveCourse($event, string $description): string
+    {
+        $category = trim((string) ($event->CATEGORIES[0] ?? ''));
+
+        if ($category !== '') {
+            return Str::limit($category, 190);
+        }
+
+        if (preg_match('/^(?:course|mata kuliah)\s*:\s*(.+)$/im', $description, $m)) {
+            return Str::limit(trim($m[1]), 190);
+        }
+
+        return self::FALLBACK_COURSE;
+    }
+
+    private function resolveType(string $summary): string
+    {
+        $lower = mb_strtolower($summary);
+
+        if (preg_match('/(quiz|kuis|ujian|exam|latihan soal)/', $lower)) {
+            return Deadline::TYPE_KUIS;
+        }
+
+        if (preg_match('/(tugas|assignment|homework|submit|due|tenggat|deadline|laporan|proyek|essay)/', $lower)) {
+            return Deadline::TYPE_TUGAS;
+        }
+
+        return Deadline::TYPE_LAINNYA;
+    }
+
+    private function resolveUrl($event): ?string
+    {
+        $url = trim((string) $event->URL);
+
+        return $url !== '' ? $url : null;
+    }
+}

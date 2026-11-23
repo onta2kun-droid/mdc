@@ -1,0 +1,26 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Moodle//NonSBG//id
+CALSCALE:GREGORIAN
+X-WR-TIMEZONE:Asia/Makassar
+BEGIN:VEVENT
+UID:demo-assign-9001@moodle.kampus.ac.id
+SUMMARY:Tugas 2 - Deployment Docker
+DESCRIPTION:Docker Compose dan HTTPS.\nCourse: Komputasi Awan\n
+DTSTART;TZID=Asia/Makassar:20261120T235900
+DTEND;TZID=Asia/Makassar:20261120T235900
+URL:https://moodle.kampus.ac.id/mod/assign/view.php?id=9001
+END:VEVENT
+BEGIN:VEVENT
+UID:demo-quiz-9002@moodle.kampus.ac.id
+SUMMARY:Quiz Basis Data Lanjut
+CATEGORIES: Basis Data
+DTSTART;TZID=Asia/Makassar:20261118T100000
+END:VEVENT
+BEGIN:VEVENT
+UID:demo-assign-9003@moodle.kampus.ac.id
+SUMMARY:Essay Mata Kuliah Pendidikan
+CATEGORIES: Pendidikan Karakter
+DTSTART;TZID=Asia/Makassar:20261201T120000
+END:VEVENT
+END:VCALENDAR
